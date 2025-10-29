@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Verify My Wallet — Web3.js</title>
+
+  <!-- Web3.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/web3@1.10.4/dist/web3.min.js"></script>
+
+  <style>
+    :root{font-family:Inter,system-ui,Arial,Helvetica,sans-serif}
+    body{margin:0;background:#071028;color:#e6eefc;padding:28px;display:flex;justify-content:center}
+    .card{width:900px;background:#0b1830;border-radius:16px;padding:28px;border:1px solid #15243f;box-shadow:0 8px 30px rgba(2,6,23,.6)}
+    h1{margin:0 0 8px;font-size:24px}
+    p.desc{margin:0 0 18px;color:#c7d7ff;opacity:.9}
+    .controls{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px}
+    button{background:#14243f;border:1px solid #22364f;color:#eaf2ff;padding:10px 14px;border-radius:10px;cursor:pointer;font-weight:600}
+    button:disabled{opacity:.5;cursor:not-allowed}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
+    .field{background:#071828;border:1px solid #153049;padding:12px;border-radius:10px;min-height:50px}
+    .label{font-size:12px;color:#9db6ff;margin-bottom:6px}
+    .value{word-break:break-all;color:#dff0ff}
+    .footer{font-size:13px;color:#9fb8ff;margin-top:12px}
+    .small{font-size:12px;color:#9fb8ff}
+    .status{margin-top:12px;padding:10px;border-radius:8px}
+    .ok{background:#052419;color:#bdf8d0;border:1px solid #0a5b3b}
+    .warn{background:#2a1b10;color:#ffe3bf;border:1px solid #6b3f20}
+    .bad{background:#3b0f14;color:#ffcfcf;border:1px solid #6b1a23}
+    .actions-row{display:flex;gap:8px;align-items:center}
+  </style>
+</head>
+<body>
+  <div class="card" role="main">
+    <h1>Verify My Wallet</h1>
+    <p class="desc">Connect MetaMask, sign a message (address + timestamp + nonce), and verify the signature — all in-browser, no gas.</p>
+
+    <div class="controls">
+      <button id="connectBtn">① Connect Wallet</button>
+      <button id="signBtn" disabled>② Sign Message</button>
+      <button id="verifyBtn" disabled>③ Verify Signature</button>
+      <button id="resetBtn">Reset</button>
+      <button id="downloadBtn" disabled>⬇ Download Proof</button>
+    </div>
+
+    <div class="grid">
+      <div>
+        <div class="label">Connected Address</div>
+        <div id="address" class="field value">–</div>
+      </div>
+      <div>
+        <div class="label">Network (chainId)</div>
+        <div id="chain" class="field value">–</div>
+      </div>
+
+      <div style="grid-column:1/-1">
+        <div class="label">Message to Sign</div>
+        <div id="message" class="field value">–</div>
+        <div class="small">Includes address, ISO timestamp, and a random nonce for replay protection.</div>
+      </div>
+
+      <div style="grid-column:1/-1">
+        <div class="label">Signature</div>
+        <div id="signature" class="field value">–</div>
+      </div>
+
+      <div>
+        <div class="label">Recovered Signer</div>
+        <div id="recovered" class="field value">–</div>
+      </div>
+      <div>
+        <div class="label">Verification Result</div>
+        <div id="result" class="field value">–</div>
+      </div>
+    </div>
+
+    <div id="statusBox" class="status small">Status: <strong id="statusText">Waiting</strong></div>
+
+    <div class="footer">
+      Tip: Use MetaMask account switching to test Verified / Not Verified. Data is kept in localStorage for convenience.
+    </div>
+  </div>
+
+  <script>
+    // --- Utilities ---
+    const $ = id => document.getElementById(id);
+    const connectBtn = $('connectBtn');
+    const signBtn = $('signBtn');
+    const verifyBtn = $('verifyBtn');
+    const resetBtn = $('resetBtn');
+    const downloadBtn = $('downloadBtn');
+
+    const addressEl = $('address');
+    const chainEl = $('chain');
+    const messageEl = $('message');
+    const signatureEl = $('signature');
+    const recoveredEl = $('recovered');
+    const resultEl = $('result');
+    const statusBox = $('statusBox');
+    const statusText = $('statusText');
+
+    let web3 = null;
+    let currentAccount = null;
+
+    // Local cache key
+    const CACHE_KEY = 'vmw-cache-v2';
+
+    // Load cache if any
+    function loadCache() {
+      try {
+        const cache = JSON.parse(localStorage.getItem(CACHE_KEY) || '{}');
+        if (cache.address) addressEl.textContent = cache.address;
+        if (cache.chain) chainEl.textContent = cache.chain;
+        if (cache.message) messageEl.textContent = cache.message;
+        if (cache.signature) signatureEl.textContent = cache.signature;
+        if (cache.recovered) recoveredEl.textContent = cache.recovered;
+        if (cache.result) resultEl.textContent = cache.result;
+        updateButtonsFromState();
+      } catch (e) {
+        console.warn('Cache read failed', e);
+      }
+    }
+
+    function saveCache(partial = {}) {
+      try {
+        const curr = JSON.parse(localStorage.getItem(CACHE_KEY) || '{}');
+        const next = { ...curr, ...partial };
+        localStorage.setItem(CACHE_KEY, JSON.stringify(next));
+      } catch (e) {
+        console.warn('Cache write failed', e);
+      }
+    }
+
+    function clearCacheAndUI() {
+      localStorage.removeItem(CACHE_KEY);
+      addressEl.textContent = '–';
+      chainEl.textContent = '–';
+      messageEl.textContent = '–';
+      signatureEl.textContent = '–';
+      recoveredEl.textContent = '–';
+      resultEl.textContent = '–';
+      currentAccount = null;
+      setStatus('Reset', 'warn');
+      updateButtonsFromState();
+    }
+
+    function setStatus(text, kind='') {
+      statusText.textContent = text;
+      statusBox.className = 'status small' + (kind ? ' ' + kind : '');
+    }
+
+    function updateButtonsFromState() {
+      const addr = addressEl.textContent && addressEl.textContent !== '–';
+      const sigExists = signatureEl.textContent && signatureEl.textContent !== '–';
+
+      connectBtn.disabled = false;
+      signBtn.disabled = !addr;
+      verifyBtn.disabled = !sigExists;
+      downloadBtn.disabled = !sigExists;
+    }
+
+    // --- MetaMask / Web3 init ---
+    async function initWeb3() {
+      if (window.ethereum) {
+        web3 = new Web3(window.ethereum);
+        setStatus('MetaMask detected', 'ok');
+
+        // Listen to account and chain changes
+        window.ethereum.on('accountsChanged', (accs) => {
+          currentAccount = (accs && accs.length) ? Web3.utils.toChecksumAddress(accs[0]) : null;
+          addressEl.textContent = currentAccount || '–';
+          saveCache({ address: currentAccount || '–' });
+
+          // Re-enable verify if signature exists in UI
+          const hasSig = signatureEl.textContent && signatureEl.textContent !== '–';
+          signBtn.disabled = !currentAccount;
+          verifyBtn.disabled = !hasSig;
+          setStatus('Account changed', hasSig ? 'warn' : 'warn');
+          console.log('accountsChanged ->', currentAccount);
+        });
+
+        window.ethereum.on('chainChanged', (chainIdHex) => {
+          const chainText = `${chainIdHex} (${parseInt(chainIdHex, 16)})`;
+          chainEl.textContent = chainText;
+          saveCache({ chain: chainText });
+
+          const hasSig = signatureEl.textContent && signatureEl.textContent !== '–';
+          verifyBtn.disabled = !hasSig;
+          setStatus('Network changed', 'warn');
+          console.log('chainChanged ->', chainText);
+        });
+
+        loadCache(); // populate UI with cache if present
+      } else {
+        setStatus('MetaMask not detected. Install MetaMask and reload.', 'bad');
+        alert('MetaMask not detected. Please install MetaMask and reload.');
+      }
+    }
+
+    // --- Connect Wallet ---
+    connectBtn.addEventListener('click', async () => {
+      try {
+        await initWeb3();
+        // Request accounts (eth_requestAccounts)
+        const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+        currentAccount = Web3.utils.toChecksumAddress(accounts[0]);
+        addressEl.textContent = currentAccount;
+
+        const chainId = await window.ethereum.request({ method: 'eth_chainId' });
+        const chainText = `${chainId} (${parseInt(chainId, 16)})`;
+        chainEl.textContent = chainText;
+
+        // Prepare message (address + timestamp + nonce)
+        const nonce = crypto.getRandomValues(new Uint32Array(1))[0].toString();
+        const ts = new Date().toISOString();
+        const message = [
+          "Verify My Wallet v1",
+          `Address: ${currentAccount}`,
+          `Timestamp: ${ts}`,
+          `Nonce: ${nonce}`
+        ].join('\\n');
+
+        messageEl.textContent = message;
+        signatureEl.textContent = '–';
+        recoveredEl.textContent = '–';
+        resultEl.textContent = '–';
+
+        saveCache({ address: currentAccount, chain: chainText, message });
+        setStatus('Wallet connected — ready to sign', 'ok');
+        updateButtonsFromState();
+      } catch (err) {
+        console.error(err);
+        setStatus('Connection failed', 'bad');
+        alert(err.message || 'Connection failed.');
+      }
+    });
+
+    // --- Sign Message ---
+    signBtn.addEventListener('click', async () => {
+      try {
+        if (!currentAccount) throw new Error('Connect your wallet first.');
+        const message = messageEl.textContent;
+        if (!message || message === '–') throw new Error('No message to sign.');
+
+        // personal_sign: [message, address]
+        const signature = await window.ethereum.request({
+          method: 'personal_sign',
+          params: [message, currentAccount]
+        });
+
+        signatureEl.textContent = signature;
+        saveCache({ signature });
+        setStatus('Message signed — you can verify or switch accounts to test', 'ok');
+        updateButtonsFromState();
+      } catch (err) {
+        console.error(err);
+        setStatus('Signing failed', 'bad');
+        alert(err.message || 'Signing failed.');
+      }
+    });
+
+    // --- Verify Signature ---
+    verifyBtn.addEventListener('click', async () => {
+      try {
+        const message = messageEl.textContent;
+        const signature = signatureEl.textContent;
+        if (!message || message === '–') throw new Error('No message found.');
+        if (!signature || signature === '–') throw new Error('No signature found.');
+
+        // Use web3 to recover address from message + signature
+        const recovered = web3.eth.accounts.recover(message, signature);
+        recoveredEl.textContent = recovered;
+        saveCache({ recovered });
+
+        const connected = addressEl.textContent && addressEl.textContent !== '–' ? Web3.utils.toChecksumAddress(addressEl.textContent) : null;
+        const equal = connected && recovered && Web3.utils.toChecksumAddress(recovered) === Web3.utils.toChecksumAddress(connected);
+
+        resultEl.textContent = equal ? '✔ Verified' : '✖ Not Verified';
+        setStatus(equal ? 'Signature verified ✅' : 'Signature does not match current account ❌', equal ? 'ok' : 'bad');
+        saveCache({ result: resultEl.textContent });
+      } catch (err) {
+        console.error(err);
+        setStatus('Verification failed', 'bad');
+        alert(err.message || 'Verification failed.');
+      }
+    });
+
+    // --- Download Proof JSON ---
+    downloadBtn.addEventListener('click', () => {
+      const address = addressEl.textContent || '';
+      const message = messageEl.textContent || '';
+      const signature = signatureEl.textContent || '';
+      if (!signature || signature === '–') {
+        alert('No signature to download.');
+        return;
+      }
+      const payload = {
+        address,
+        message,
+        signature,
+        downloadedAt: new Date().toISOString()
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `verify-proof-${(address||'unknown').slice(0,10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    // --- Reset ---
+    resetBtn.addEventListener('click', () => {
+      clearCacheAndUI();
+      setStatus('Reset performed', 'warn');
+    });
+
+    // Initialize on load
+    (async () => {
+      await initWeb3();
+    })();
+  </script>
+</body>
+</html>
+
