@@ -5,7 +5,7 @@ A small, beginner-friendly Web3 dApp that lets users **connect MetaMask**, **sig
 ---
 
 ## 🔗 Live demo
-[Open the live demo here](verify-my-wallet-murex.vercel.app)
+[Open the live demo here](https://verify-my-wallet-mansigoles-projects.vercel.app/)
 
 ---
 
@@ -43,3 +43,4 @@ Add screenshots to the `screenshots/` folder and reference them here:
 ![Connect Wallet](screenshots/connect.png)
 ![Sign Message](screenshots/sign.png)
 ![Verified Result](screenshots/verify.png)
+
