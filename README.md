@@ -36,11 +36,4 @@ A small, beginner-friendly Web3 dApp that lets users **connect MetaMask**, **sig
 
 ---
 
-## 📸 Screenshots
-Add screenshots to the `screenshots/` folder and reference them here:
-
-```md
-![Connect Wallet](screenshots/connect.png)
-![Sign Message](screenshots/sign.png)
-![Verified Result](screenshots/verify.png)
 
